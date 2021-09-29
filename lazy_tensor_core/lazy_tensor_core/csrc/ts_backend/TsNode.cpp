@@ -19,6 +19,13 @@ lazy_tensors::Shape GetShapeFromTsValue(const ir::Value& value) {
   throw std::runtime_error("Expected TsNode but could not dynamic cast");
 }
 
+lazy_tensors::Shape GetShapeFromTsNode(const ir::Node& node) {
+  if (auto tsnode = dynamic_cast<const TsNode*>(&node)) {
+    return tsnode->shape();
+  }
+  throw std::runtime_error("Expected TsNode but could not dynamic cast");
+}
+
 TsNode::TsNode(OpKind op, OpList operands, lazy_tensors::Shape shape,
                size_t num_outputs, lazy_tensors::hash_t hash_seed)
     : Node(op, operands, shape, num_outputs, hash_seed), shape_(shape) {}
@@ -77,6 +84,19 @@ lazy_tensors::Shape TsNode::TsGetOpShape(
                              std::make_shared<lazy_tensors::Shape>(shape_fn()));
   }
   return *shape;
+}
+
+std::string TsNode::ToString() const {
+  std::stringstream ss;
+  ss << shape() << " " << op();
+  if (num_outputs() > 1) {
+    ss << ", num_outputs=" << num_outputs();
+  }
+  if (!metadata().scope.empty()) {
+    ss << ", scope=" << metadata().scope;
+  }
+  EmitShortFrameInfo(ss, metadata().frame_info);
+  return ss.str();
 }
 
 }  // namespace ir
