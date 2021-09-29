@@ -5654,6 +5654,22 @@ def sample_inputs_pairwise_distance(op_info, device, dtype, requires_grad, **kwa
         SampleInput(make(shape), args=(make(shape),), kwargs=kwargs) for shape, kwargs in shapes_and_kwargs
     ]
 
+def sample_inputs_pixel_shuffle(op_info, device, dtype, requires_grad, **kwargs):
+    make_input = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
+
+    shapes_and_upscale_factors = [
+        ((1, 9, 2, 2), 1),
+        ((1, 9, 2, 2), 3),
+        ((9, 2, 2), 1),
+        ((2, 3, 9, 2, 2), 1),
+    ]
+
+    return [
+        SampleInput(make_input(shape), kwargs=dict(upscale_factor=upscale_factor))
+        for shape, upscale_factor in shapes_and_upscale_factors
+    ]
+
+
 foreach_unary_op_db: List[OpInfo] = [
     ForeachFuncInfo('exp'),
     ForeachFuncInfo('acos'),
@@ -10082,6 +10098,21 @@ op_db: List[OpInfo] = [
             ),
         ),
     ),
+    OpInfo(
+        "nn.functional.pixel_shuffle",
+        sample_inputs_func=sample_inputs_pixel_shuffle,
+        dtypes=all_types_and_complex_and(torch.bool, torch.float16, torch.bfloat16),
+        supports_out=False,
+        supports_forward_ad=True,
+        skips=(
+            DecorateInfo(
+                unittest.skip("Skipped!"),
+                "TestJit",
+                "test_variant_consistency_jit",
+                dtypes=(torch.float32, torch.complex64),
+            ),
+        ),
+    )
 ]
 
 # Common operator groupings
