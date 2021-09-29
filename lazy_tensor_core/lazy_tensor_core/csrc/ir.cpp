@@ -145,14 +145,12 @@ Node::Node(OpKind op, OpList operands,
            const std::function<lazy_tensors::Shape()>& shape_fn,
            size_t num_outputs, lazy_tensors::hash_t hash_seed)
     : Node(std::move(op), operands, lazy_tensors::Shape(), num_outputs,
-           hash_seed) {
-}
+           hash_seed) {}
 
 Node::Node(OpKind op, OpList operands, size_t num_outputs,
            lazy_tensors::hash_t hash_seed)
     : Node(std::move(op), operands, lazy_tensors::Shape(), num_outputs,
            hash_seed) {}
-
 
 Node::Node(OpKind op, lazy_tensors::Shape shape, size_t num_outputs,
            lazy_tensors::hash_t hash_seed)
