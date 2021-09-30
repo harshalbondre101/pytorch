@@ -67,95 +67,6 @@ if(INTERN_BUILD_ATEN_OPS)
     set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/MapAllocator.cpp PROPERTIES COMPILE_FLAGS "-fno-openmp")
   endif()
 
-  file(GLOB cpu_kernel_cpp_in "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/cpu/*.cpp" "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/quantized/cpu/kernels/*.cpp")
-
-  list(APPEND CPU_CAPABILITY_NAMES "DEFAULT")
-  list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}")
-
-
-  if(CXX_AVX512_FOUND)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_AVX512_CPU_DEFINITION")
-    list(APPEND CPU_CAPABILITY_NAMES "AVX512")
-    if(MSVC)
-      list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}/arch:AVX512")
-    else(MSVC)
-      list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG} -mavx512f -mavx512bw -mavx512vl -mavx512dq -mfma")
-    endif(MSVC)
-  endif(CXX_AVX512_FOUND)
-
-  if(CXX_AVX2_FOUND)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_AVX2_CPU_DEFINITION")
-
-    # Some versions of GCC pessimistically split unaligned load and store
-    # instructions when using the default tuning. This is a bad choice on
-    # new Intel and AMD processors so we disable it when compiling with AVX2.
-    # See https://stackoverflow.com/questions/52626726/why-doesnt-gcc-resolve-mm256-loadu-pd-as-single-vmovupd#tab-top
-    check_cxx_compiler_flag("-mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store" COMPILER_SUPPORTS_NO_AVX256_SPLIT)
-    if(COMPILER_SUPPORTS_NO_AVX256_SPLIT)
-      set(CPU_NO_AVX256_SPLIT_FLAGS "-mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
-    endif(COMPILER_SUPPORTS_NO_AVX256_SPLIT)
-
-    list(APPEND CPU_CAPABILITY_NAMES "AVX2")
-    if(DEFINED ENV{ATEN_AVX512_256})
-      if($ENV{ATEN_AVX512_256} MATCHES "TRUE")
-        if(CXX_AVX512_FOUND)
-          message("-- ATen AVX2 kernels will use 32 ymm registers")
-          if(MSVC)
-            list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}/arch:AVX512")
-          else(MSVC)
-            list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG} -march=native ${CPU_NO_AVX256_SPLIT_FLAGS}")
-          endif(MSVC)
-        endif(CXX_AVX512_FOUND)
-      endif()
-    else()
-      if(MSVC)
-        list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}/arch:AVX2")
-      else(MSVC)
-        list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG} -mavx2 -mfma ${CPU_NO_AVX256_SPLIT_FLAGS}")
-      endif(MSVC)
-    endif()
-  endif(CXX_AVX2_FOUND)
-
-  if(CXX_VSX_FOUND)
-    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_VSX_CPU_DEFINITION")
-    LIST(APPEND CPU_CAPABILITY_NAMES "VSX")
-    LIST(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}  ${CXX_VSX_FLAGS}")
-  endif(CXX_VSX_FOUND)
-
-  list(LENGTH CPU_CAPABILITY_NAMES NUM_CPU_CAPABILITY_NAMES)
-  math(EXPR NUM_CPU_CAPABILITY_NAMES "${NUM_CPU_CAPABILITY_NAMES}-1")
-
-  # The sources list might get reordered later based on the capabilites.
-  # See NOTE [ Linking AVX and non-AVX files ]
-  foreach(i RANGE ${NUM_CPU_CAPABILITY_NAMES})
-    foreach(IMPL ${cpu_kernel_cpp_in})
-      string(REPLACE "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/" "" NAME ${IMPL})
-      list(GET CPU_CAPABILITY_NAMES ${i} CPU_CAPABILITY)
-      set(NEW_IMPL ${CMAKE_BINARY_DIR}/aten/src/ATen/${NAME}.${CPU_CAPABILITY}.cpp)
-      configure_file(${IMPL} ${NEW_IMPL} COPYONLY)
-      set(cpu_kernel_cpp ${NEW_IMPL} ${cpu_kernel_cpp}) # Create list of copies
-      list(GET CPU_CAPABILITY_FLAGS ${i} FLAGS)
-      if(MSVC)
-        set(EXTRA_FLAGS "/DCPU_CAPABILITY=${CPU_CAPABILITY} /DCPU_CAPABILITY_${CPU_CAPABILITY}")
-      else(MSVC)
-        set(EXTRA_FLAGS "-DCPU_CAPABILITY=${CPU_CAPABILITY} -DCPU_CAPABILITY_${CPU_CAPABILITY}")
-      endif(MSVC)
-      # Disable certain warnings for GCC-9.X
-      if(CMAKE_COMPILER_IS_GNUCXX AND (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 9.0.0))
-        if(("${NAME}" STREQUAL "native/cpu/GridSamplerKernel.cpp") AND ("${CPU_CAPABILITY}" STREQUAL "DEFAULT"))
-          # See https://github.com/pytorch/pytorch/issues/38855
-          set(EXTRA_FLAGS "${EXTRA_FLAGS} -Wno-uninitialized")
-        endif()
-        if("${NAME}" STREQUAL "native/quantized/cpu/kernels/QuantizedOpKernels.cpp")
-          # See https://github.com/pytorch/pytorch/issues/38854
-          set(EXTRA_FLAGS "${EXTRA_FLAGS} -Wno-deprecated-copy")
-        endif()
-      endif()
-      set_source_files_properties(${NEW_IMPL} PROPERTIES COMPILE_FLAGS "${FLAGS} ${EXTRA_FLAGS}")
-    endforeach()
-  endforeach()
-  list(APPEND ATen_CPU_SRCS ${cpu_kernel_cpp})
-
   file(GLOB_RECURSE all_python "${CMAKE_CURRENT_LIST_DIR}/../tools/codegen/*.py")
 
   set(GEN_ROCM_FLAG)
@@ -229,6 +140,7 @@ if(INTERN_BUILD_ATEN_OPS)
   endif()
   # FIXME: the file/variable name lists cpp, but these list both cpp and .h files
   file(READ ${CMAKE_BINARY_DIR}/aten/src/ATen/generated_cpp.txt generated_cpp)
+  file(READ ${CMAKE_BINARY_DIR}/aten/src/ATen/generated_cpp.txt-cpu-vec cpu_vec_generated_cpp)
   file(READ ${CMAKE_BINARY_DIR}/aten/src/ATen/generated_cpp.txt-cuda cuda_generated_cpp)
   file(READ ${CMAKE_BINARY_DIR}/aten/src/ATen/generated_cpp.txt-core core_generated_cpp)
 
@@ -237,7 +149,7 @@ if(INTERN_BUILD_ATEN_OPS)
   file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/aten/src/ATen)
   file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/aten/src/ATen/core)
 
-  add_custom_command(OUTPUT ${generated_cpp} ${cuda_generated_cpp} ${core_generated_cpp}
+  add_custom_command(OUTPUT ${generated_cpp} ${cuda_generated_cpp} ${core_generated_cpp} ${cpu_vec_generated_cpp}
     COMMAND ${GEN_COMMAND}
     DEPENDS ${all_python} ${all_templates}
       ${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/native_functions.yaml
@@ -247,12 +159,107 @@ if(INTERN_BUILD_ATEN_OPS)
   # Generated headers used from a CUDA (.cu) file are
   # not tracked correctly in CMake. We make the libATen.so depend explicitly
   # on building the generated ATen files to workaround.
-  add_custom_target(ATEN_CPU_FILES_GEN_TARGET DEPENDS ${generated_cpp} ${core_generated_cpp})
+  add_custom_target(ATEN_CPU_FILES_GEN_TARGET DEPENDS ${generated_cpp} ${core_generated_cpp} ${cpu_vec_generated_cpp})
   add_custom_target(ATEN_CUDA_FILES_GEN_TARGET DEPENDS ${cuda_generated_cpp})
   add_library(ATEN_CPU_FILES_GEN_LIB INTERFACE)
   add_library(ATEN_CUDA_FILES_GEN_LIB INTERFACE)
   add_dependencies(ATEN_CPU_FILES_GEN_LIB ATEN_CPU_FILES_GEN_TARGET)
   add_dependencies(ATEN_CUDA_FILES_GEN_LIB ATEN_CUDA_FILES_GEN_TARGET)
+
+
+  file(GLOB cpu_kernel_cpp_in "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/cpu/*.cpp" "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/quantized/cpu/kernels/*.cpp")
+  list(APPEND cpu_kernel_cpp_in "${cpu_vec_generated_cpp}")
+
+  list(APPEND CPU_CAPABILITY_NAMES "DEFAULT")
+  list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}")
+
+
+  if(CXX_AVX512_FOUND)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_AVX512_CPU_DEFINITION")
+    list(APPEND CPU_CAPABILITY_NAMES "AVX512")
+    if(MSVC)
+      list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}/arch:AVX512")
+    else(MSVC)
+      list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG} -mavx512f -mavx512bw -mavx512vl -mavx512dq -mfma")
+    endif(MSVC)
+  endif(CXX_AVX512_FOUND)
+
+  if(CXX_AVX2_FOUND)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_AVX2_CPU_DEFINITION")
+
+    # Some versions of GCC pessimistically split unaligned load and store
+    # instructions when using the default tuning. This is a bad choice on
+    # new Intel and AMD processors so we disable it when compiling with AVX2.
+    # See https://stackoverflow.com/questions/52626726/why-doesnt-gcc-resolve-mm256-loadu-pd-as-single-vmovupd#tab-top
+    check_cxx_compiler_flag("-mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store" COMPILER_SUPPORTS_NO_AVX256_SPLIT)
+    if(COMPILER_SUPPORTS_NO_AVX256_SPLIT)
+      set(CPU_NO_AVX256_SPLIT_FLAGS "-mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store")
+    endif(COMPILER_SUPPORTS_NO_AVX256_SPLIT)
+
+    list(APPEND CPU_CAPABILITY_NAMES "AVX2")
+    if(DEFINED ENV{ATEN_AVX512_256})
+      if($ENV{ATEN_AVX512_256} MATCHES "TRUE")
+        if(CXX_AVX512_FOUND)
+          message("-- ATen AVX2 kernels will use 32 ymm registers")
+          if(MSVC)
+            list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}/arch:AVX512")
+          else(MSVC)
+            list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG} -march=native ${CPU_NO_AVX256_SPLIT_FLAGS}")
+          endif(MSVC)
+        endif(CXX_AVX512_FOUND)
+      endif()
+    else()
+      if(MSVC)
+        list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}/arch:AVX2")
+      else(MSVC)
+        list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG} -mavx2 -mfma ${CPU_NO_AVX256_SPLIT_FLAGS}")
+      endif(MSVC)
+    endif()
+  endif(CXX_AVX2_FOUND)
+
+  if(CXX_VSX_FOUND)
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_VSX_CPU_DEFINITION")
+    LIST(APPEND CPU_CAPABILITY_NAMES "VSX")
+    LIST(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}  ${CXX_VSX_FLAGS}")
+  endif(CXX_VSX_FOUND)
+
+  list(LENGTH CPU_CAPABILITY_NAMES NUM_CPU_CAPABILITY_NAMES)
+  math(EXPR NUM_CPU_CAPABILITY_NAMES "${NUM_CPU_CAPABILITY_NAMES}-1")
+
+  # The sources list might get reordered later based on the capabilites.
+  # See NOTE [ Linking AVX and non-AVX files ]
+  file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/aten/src/ATen/native/cpu)
+  file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/aten/src/ATen/native/quantized/cpu/kernels)
+  foreach(i RANGE ${NUM_CPU_CAPABILITY_NAMES})
+    foreach(IMPL ${cpu_kernel_cpp_in})
+      string(REPLACE "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/" "" NAME ${IMPL})
+      list(GET CPU_CAPABILITY_NAMES ${i} CPU_CAPABILITY)
+      set(NEW_IMPL ${CMAKE_BINARY_DIR}/aten/src/ATen/${NAME}.${CPU_CAPABILITY}.cpp)
+      add_custom_command(OUTPUT ${NEW_IMPL}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${IMPL} ${NEW_IMPL} DEPENDS ${IMPL}
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+      set(cpu_kernel_cpp ${NEW_IMPL} ${cpu_kernel_cpp}) # Create list of copies
+      list(GET CPU_CAPABILITY_FLAGS ${i} FLAGS)
+      if(MSVC)
+        set(EXTRA_FLAGS "/DCPU_CAPABILITY=${CPU_CAPABILITY} /DCPU_CAPABILITY_${CPU_CAPABILITY}")
+      else(MSVC)
+        set(EXTRA_FLAGS "-DCPU_CAPABILITY=${CPU_CAPABILITY} -DCPU_CAPABILITY_${CPU_CAPABILITY}")
+      endif(MSVC)
+      # Disable certain warnings for GCC-9.X
+      if(CMAKE_COMPILER_IS_GNUCXX AND (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 9.0.0))
+        if(("${NAME}" STREQUAL "native/cpu/GridSamplerKernel.cpp") AND ("${CPU_CAPABILITY}" STREQUAL "DEFAULT"))
+          # See https://github.com/pytorch/pytorch/issues/38855
+          set(EXTRA_FLAGS "${EXTRA_FLAGS} -Wno-uninitialized")
+        endif()
+        if("${NAME}" STREQUAL "native/quantized/cpu/kernels/QuantizedOpKernels.cpp")
+          # See https://github.com/pytorch/pytorch/issues/38854
+          set(EXTRA_FLAGS "${EXTRA_FLAGS} -Wno-deprecated-copy")
+        endif()
+      endif()
+      set_source_files_properties(${NEW_IMPL} PROPERTIES COMPILE_FLAGS "${FLAGS} ${EXTRA_FLAGS}")
+    endforeach()
+  endforeach()
+  list(APPEND ATen_CPU_SRCS ${cpu_kernel_cpp})
 endif()
 
 function(append_filelist name outputvar)
