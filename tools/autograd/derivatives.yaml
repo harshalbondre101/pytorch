@@ -1934,11 +1934,6 @@
   grad_output: hardtanh_backward(grad, self, min_val, max_val)
   self: zeros_like(grad)
 
-- name: kl_div_backward(Tensor grad_output, Tensor self, Tensor target, int reduction=Mean, *, bool log_target=False) -> Tensor
-  grad_output: kl_div_double_backward_grad_output(grad, self, target, reduction, log_target)
-  self: zeros_like(grad)
-  target: zeros_like(grad)
-
 - name: l1_loss_backward(Tensor grad_output, Tensor self, Tensor target, int reduction) -> Tensor
   grad_output: l1_loss_double_backward_grad_output(grad, grad_output, self, target, reduction)
   self: l1_loss_double_backward(grad, grad_output, self, target, reduction)
