@@ -134,6 +134,14 @@ bool InterpreterState::run(Stack& stack) {
                   ->getMethod(code.constants_[inst.X].toStringRef());
           RECORD_EDGE_SCOPE_WITH_DEBUG_HANDLE_AND_INPUTS(
               method.name(), debug_handle, stack);
+
+          // FIXME (zhxchen17)
+          if (auto f = dynamic_cast<mobile::Function*>(&method)) {
+            frame.step();
+            enterFrame(*f->get_code());
+            continue;
+          }
+
           method.run(stack);
           frame.step();
         } break;
