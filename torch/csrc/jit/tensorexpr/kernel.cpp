@@ -664,6 +664,11 @@ std::vector<ExprHandle> TensorExprKernel::sizesFromVaryingShape(
 
 std::vector<ExprHandle> TensorExprKernel::sizesForValue(
     const torch::jit::Value* v) {
+  auto kind = v->type()->kind();
+  std::cout << "XXX " << __FUNCTION__ << " v:" << v->debugName()
+    << " type:" << v->type()->str() 
+    << " type kind:" << typeKindToString(kind)
+    << std::endl;
   if (known_sizes_.count(v)) {
     return known_sizes_.at(v);
   }
@@ -682,6 +687,9 @@ std::vector<ExprHandle> TensorExprKernel::sizesForValue(
     return {int64_t{1}};
   }
   if (v->type()->isSubtypeOf(NoneType::get())) {
+    return {};
+  }
+  if (v->type()->kind() == TypeKind::ClassType) {
     return {};
   }
 
@@ -1386,6 +1394,152 @@ Tensor computePrepackedLinearClampRun(
   return Tensor(ResultBuf.node(), s);
 }
 
+Tensor computeQuantizedConv2dPrepack(
+    const std::vector<ArgValue>& inputs,
+    const std::vector<ExprHandle>& outputShape,
+    const c10::optional<ScalarType>& outputType) {
+  Dtype dtype = kFloat;
+  if (outputType) {
+    dtype = Dtype(*outputType);
+  }
+
+  BufHandle ResultBuf("quantized_conv2d_prepack", outputShape, dtype);
+  const BufHandle& w = c10::get<BufHandle>(inputs[0]);
+  const BufHandle& b = c10::get<BufHandle>(inputs[1]);
+  auto strides = _pair_int(inputs[2]);
+  auto padding = _pair_int(inputs[3]);
+  auto dilation = _pair_int(inputs[4]);
+  int groups = c10::get<int64_t>(inputs[5]);
+
+  StmtPtr s = ExternalCall::make(
+      ResultBuf,
+      "nnc_quantized_conv2d_prepack",
+      {w, b},
+      {strides[0], strides[1], padding[0], padding[1], dilation[0], dilation[1], groups});
+  return Tensor(ResultBuf.node(), s);
+}
+
+Tensor computeQuantizedConv2d(
+    const std::vector<ArgValue>& inputs,
+    const std::vector<ExprHandle>& outputShape,
+    const c10::optional<ScalarType>& outputType) {
+  Dtype dtype = kFloat;
+  if (outputType) {
+    dtype = Dtype(*outputType);
+  }
+
+  BufHandle ResultBuf("quantized_conv2d", outputShape, dtype);
+  const BufHandle& inp = c10::get<BufHandle>(inputs[0]);
+  const BufHandle& prepacked = c10::get<BufHandle>(inputs[1]);
+  const double qscale = c10::get<double>(inputs[2]);
+  const int64_t qzero = c10::get<int64_t>(inputs[3]);
+  double out_qscale = 0.6f;
+  int64_t out_qzero = 66l;
+  StmtPtr s = ExternalCall::make(
+      ResultBuf, "nnc_quantized_conv2d", {inp, prepacked}, {qscale, qzero, out_qscale, out_qzero});
+  std::cout << "XXX quantized_conv2d out_qscale:" << out_qscale << " out_qzero:" << out_qzero << std::endl;
+  ResultBuf.node()->set_qscale(DoubleImm::make(out_qscale).node());
+  ResultBuf.node()->set_qzero(LongImm::make(out_qzero).node());
+  return Tensor(ResultBuf.node(), s);
+}
+
+Tensor computeQuantizePerTensor(
+    const std::vector<ArgValue>& inputs,
+    const std::vector<ExprHandle>& outputShape,
+    const c10::optional<ScalarType>& outputType) {
+  std::cout << "XXX " << __FUNCTION__ << std::endl;
+  auto output_sizes_expr = ExprHandleVectorToExprVector(outputShape);
+  std::vector<VarPtr> vars;
+  for (const auto& os : outputShape) {
+    vars.push_back(alloc<Var>(
+        "",
+        os.node()->dtype().scalar_type() == ScalarType::Long ? kLong : kInt));
+  }
+  std::cout << "XXX " << __FUNCTION__ << std::endl;
+  for (const auto& arg : inputs) {
+    std::cout << "XXX " << getArgValueName(arg) << std::endl;
+  }
+  std::cout << "XXX " << __FUNCTION__ <<  " outputType:" << *outputType << std::endl;
+  auto axes = VarVectorToVarHandleVector(vars);
+  std::vector<ExprHandle> indices(axes.begin(), axes.end());
+
+  auto qscale = constant(inputs[1]);
+  auto qzero = constant(inputs[2]);
+  const int64_t qdtype = c10::get<int64_t>(inputs[3]);
+  std::cout << "XXX " << __FUNCTION__<< " qdtype:" << qdtype << std::endl;
+  const auto dtype = [qdtype]() {
+    // TODO: replace 12 and 13 with literals
+    if (13l == qdtype) {
+      return Dtype(ScalarType::Byte);
+    } else if (12l == qdtype) {
+      return Dtype(ScalarType::Char);
+    }
+    throw malformed_input("Unsupported quantized dtype");
+  }();
+  // Q(x, scale, zero) = round(x / scale + zero)
+  const BufHandle& inp = c10::get<BufHandle>(inputs[0]);
+
+	auto inp_dtype = inp.node()->dtype();
+  qscale = promoteToDtype(qscale, inp_dtype.scalar_type());
+  qzero = promoteToDtype(qzero, inp_dtype.scalar_type());
+  ExprHandle exprHandle = promoteToDtype(
+      tensorOrConstant(inputs[0], indices) / qscale + qzero + FloatImm::make(0.5f),
+      dtype.scalar_type());
+
+  BufPtr buf = alloc<Buf>(
+      "quantize_per_tensor",
+      output_sizes_expr,
+      dtype,
+      nullptr,
+      qscale.node(),
+      qzero.node());
+  return Tensor(buf, vars, exprHandle.node());
+}
+
+Tensor computeDequantize(
+    const std::vector<ArgValue>& inputs,
+    const std::vector<ExprHandle>& outputShape,
+    const c10::optional<ScalarType>& outputType) {
+  Dtype dtype = kFloat;
+  if (outputType) {
+    dtype = Dtype(*outputType);
+  }
+  std::cout << "XXX " << __FUNCTION__ << std::endl;
+  for (const auto& arg : inputs) {
+    std::cout << "XXX " << getArgValueName(arg) << std::endl;
+  }
+  std::cout << "XXX " << __FUNCTION__ <<  " outputType:" << *outputType << std::endl;
+  auto qbuf = c10::get<BufHandle>(inputs[0]);
+  auto qscale = qbuf.node()->qscale();
+  auto qzero = qbuf.node()->qzero();
+  auto qbuf_dtype = qbuf.node()->dtype();
+  TORCH_INTERNAL_ASSERT(qscale, buildErrorMessage("Missing quantized scale for dequantize"));
+  TORCH_INTERNAL_ASSERT(qzero, buildErrorMessage("Missing quantized zero point for dequantize"));
+  std::cout << "XXX qbuf_dtype:" << qbuf_dtype << std::endl;
+  // TODO: Use default dtype?
+  //auto dtype = Dtype(ScalarType::Float);
+  std::cout << "XXX qscale:" << qscale << std::endl;
+  std::cout << "XXX qzero:" << qzero << std::endl;
+  std::vector<VarPtr> vars;
+  for (const auto& os : outputShape) {
+    vars.push_back(alloc<Var>(
+        "",
+        os.node()->dtype().scalar_type() == ScalarType::Long ? kLong : kInt));
+  }
+  auto axes = VarVectorToVarHandleVector(vars);
+  std::vector<ExprHandle> indices(axes.begin(), axes.end());
+  auto qxf = promoteToDtype(tensorOrConstant(inputs[0], indices), dtype.scalar_type());
+  ExprHandle exprHandle = promoteToDtype(
+      (qxf - ExprHandle(qzero)) * ExprHandle(qscale),
+      dtype.scalar_type()
+  );
+  //ExprHandle exprHandle = promoteToDtype(tensorOrConstant(inputs[0], indices), dtype.scalar_type());
+
+  auto output_sizes_expr = ExprHandleVectorToExprVector(outputShape);
+  BufPtr buf = alloc<Buf>("dequantize", output_sizes_expr, dtype);
+  return Tensor(buf, vars, exprHandle.node());
+}
+
 Tensor tensorexpr::computeOperandValue(
     c10::Symbol op,
     const std::vector<ArgValue>& inputs,
@@ -1393,10 +1547,14 @@ Tensor tensorexpr::computeOperandValue(
     const c10::optional<ScalarType>& outputType,
     at::Device device) {
   const std::string opStr = op.toQualString();
-  if (opStr == "prepacked::conv2d_clamp_run") {
+  if ("prepacked::conv2d_clamp_run" == opStr) {
     return computePrepackedConv2dClampRun(inputs, outputShape, outputType);
-  } else if (opStr == "prepacked::linear_clamp_run") {
+  } else if ("prepacked::linear_clamp_run" == opStr) {
     return computePrepackedLinearClampRun(inputs, outputShape, outputType);
+  } else if ("quantized::conv2d_prepack" == opStr) {
+    return computeQuantizedConv2dPrepack(inputs, outputShape, outputType);
+  } else if ("quantized::conv2d" == opStr) {
+    return computeQuantizedConv2d(inputs, outputShape, outputType);
   }
   switch (op) {
     case aten::add: {
@@ -2480,6 +2638,19 @@ Tensor tensorexpr::computeOperandValue(
     case aten::conv2d: {
       return computeConv2d(inputs, outputShape, outputType);
     } break;
+    case aten::linear: {
+      // linear = inputs[0] @ inputs[1] + inputs[2]
+      // addmm = beta(inputs[3]) * inputs[0] + alpha(inputs[4]) * inputs[1] @
+      // inputs[2]
+      std::vector<ArgValue> addmmInputs;
+      addmmInputs.reserve(5);
+      addmmInputs.push_back(inputs[2]);
+      addmmInputs.push_back(inputs[0]);
+      addmmInputs.push_back(inputs[1]);
+      addmmInputs.push_back(1l); // beta
+      addmmInputs.push_back(1l); // alpha
+      return computeAddMM(addmmInputs, outputShape, outputType);
+    } break;
     case aten::addmm: {
       return computeAddMM(inputs, outputShape, outputType);
     } break;
@@ -2489,6 +2660,18 @@ Tensor tensorexpr::computeOperandValue(
     case aten::adaptive_avg_pool2d: {
       return computeAdaptiveAvgPool2d(inputs, outputShape, outputType);
     } break;
+    case aten::quantize_per_tensor: {
+      return computeQuantizePerTensor(inputs, outputShape, outputType);
+    } break;
+    case aten::dequantize: {
+      return computeDequantize(inputs, outputShape, outputType);
+    } break;
+    default: {
+      std::string msg =
+          std::string("Unhandled node kind (in computeOperandValue): ") +
+          op.toQualString();
+      throw malformed_input(msg);
+    }
   }
   std::string msg =
       std::string("Unhandled node kind (in computeOperandValue): ") +
@@ -3134,7 +3317,6 @@ void TensorExprKernel::bindConstant(const torch::jit::Value* v) {
   for (auto s : sizes) {
     te_sizes.push_back(s);
   }
-
   BufPtr buf = alloc<Buf>(
       "const_" + sanitizeName(v->debugName()),
       ExprHandleVectorToExprVector(te_sizes),
